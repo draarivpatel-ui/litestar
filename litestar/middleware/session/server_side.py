@@ -133,9 +133,13 @@ class ServerSideSessionBackend(BaseSessionBackend["ServerSideSessionConfig"]):
             if not session_cookie or session_cookie == "null":
                 return
             await self.delete(session_id, store=store)
+            # Max-Age takes precedence over Expires (RFC 6265), so a stale
+            # max_age from cookie_params would keep the cookie alive in browsers.
             headers.add(
                 "Set-Cookie",
-                Cookie(value="null", key=self.config.key, expires=0, **cookie_params).to_header(header=""),
+                Cookie(value="null", key=self.config.key, expires=0, **{**cookie_params, "max_age": 0}).to_header(
+                    header=""
+                ),
             )
         else:
             serialised_data = self.serialize_data(scope_session, scope)
@@ -160,7 +164,7 @@ class ServerSideSessionBackend(BaseSessionBackend["ServerSideSessionConfig"]):
         Returns:
             The current session data
         """
-        if session_id := connection.cookies.get(self.config.key):
+        if (session_id := connection.cookies.get(self.config.key)) and session_id != "null":
             store = self.config.get_store_from_app(connection.scope["app"])
             data = await self.get(session_id, store=store)
             if data is not None:

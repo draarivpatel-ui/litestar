@@ -11,6 +11,7 @@ from litestar.stores.memory import MemoryStore
 from litestar.testing import TestClient
 
 if TYPE_CHECKING:
+    from pytest_mock import MockerFixture
     from time_machine import Traveller
 
     from litestar.middleware.session.server_side import ServerSideSessionBackend
@@ -231,6 +232,49 @@ async def test_cleared_session_with_session_cookie_deleted(path: str, memory_sto
         assert res.status_code == 201
         assert res.headers["set-cookie"].startswith("session=null;")
         assert not await memory_store.exists(session_id)
+
+
+async def test_cleared_session_cookie_has_zero_max_age(memory_store: MemoryStore) -> None:
+    # https://github.com/litestar-org/litestar/issues/5171
+    @post("/login")
+    def login_handler(request: Request) -> None:
+        request.set_session({"foo": "bar"})
+
+    @post("/logout")
+    def logout_handler(request: Request) -> None:
+        request.clear_session()
+
+    app = Litestar(
+        [login_handler, logout_handler],
+        middleware=[ServerSideSessionConfig(max_age=3600).middleware],
+        stores={"sessions": memory_store},
+    )
+
+    with TestClient(app) as client:
+        client.post("/login")
+        res = client.post("/logout")
+        assert res.status_code == 201
+        set_cookie = res.headers["set-cookie"]
+        assert set_cookie.startswith("session=null;")
+        assert "Max-Age=0" in set_cookie
+        assert "Max-Age=3600" not in set_cookie
+
+
+async def test_null_session_cookie_does_not_query_store(memory_store: MemoryStore, mocker: "MockerFixture") -> None:
+    # https://github.com/litestar-org/litestar/issues/5171
+    get_spy = mocker.spy(MemoryStore, "get")
+
+    @get("/")
+    def handler(request: Request) -> dict[str, object]:
+        return {"session": dict(request.session)}
+
+    app = Litestar([handler], middleware=[ServerSideSessionConfig().middleware], stores={"sessions": memory_store})
+
+    with TestClient(app, cookies={"session": "null"}) as client:
+        res = client.get("/")
+        assert res.status_code == 200
+        assert res.json() == {"session": {}}
+        get_spy.assert_not_called()
 
 
 async def test_empty_session_with_unknown_session_cookie_not_stored(memory_store: MemoryStore) -> None:
